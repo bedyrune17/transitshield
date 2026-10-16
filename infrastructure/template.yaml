@@ -1,0 +1,514 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  TransitShield - synthetic airport cargo & financial anomaly investigation demo.
+  Serverless, sized for AWS always-free allowances (see docs/COST_SAFETY.md).
+  Every resource is tagged Project=TransitShield. Synthetic data only.
+
+Parameters:
+  ProjectTag:
+    Type: String
+    Default: TransitShield
+  NamePrefix:
+    Type: String
+    Default: transitshield
+    AllowedPattern: "^[a-z][a-z0-9-]{2,20}$"
+  AllowedOrigins:
+    Type: CommaDelimitedList
+    Description: Browser origins allowed by CORS (CORS is NOT access control).
+    Default: "https://bedyrune17.github.io,http://localhost:5173,http://127.0.0.1:5173"
+  CallbackUrls:
+    Type: CommaDelimitedList
+    Description: Exact OAuth redirect / sign-out URLs for the static frontend.
+    Default: "https://bedyrune17.github.io/transitshield/,http://localhost:5173/"
+  CognitoDomainPrefix:
+    Type: String
+    Default: ""
+    Description: >-
+      Globally unique prefix for the Cognito hosted UI domain. Empty removes the
+      domain (a pool can have only one domain, so changing it is a two-step update).
+    AllowedPattern: "^$|^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+  ApiAuthType:
+    Type: String
+    Default: AWS_IAM
+    AllowedValues: [AWS_IAM, NONE]
+    Description: >-
+      AWS_IAM (default) makes AWS reject unsigned requests before the function
+      runs. NONE is a documented fallback; the function still verifies the
+      Cognito access token on every request either way.
+  WorkerMaxConcurrency:
+    Type: Number
+    Default: 2
+    MinValue: 2
+    MaxValue: 5
+    Description: Cap on concurrent worker invocations (account concurrency limit is low on new accounts).
+
+Conditions:
+  IamAuth: !Equals [!Ref ApiAuthType, AWS_IAM]
+  HasDomain: !Not [!Equals [!Ref CognitoDomainPrefix, ""]]
+
+Resources:
+  # ------------------------------------------------------------------ DynamoDB
+  # PROVISIONED mode with fixed small capacity: the DynamoDB always-free tier
+  # (25 RCU / 25 WCU / 25 GB per Region per payer account) applies to
+  # provisioned capacity on the Standard table class. Total here: 21 RCU / 21 WCU.
+  # No auto scaling (it would create extra CloudWatch alarms), no PITR, no GSIs.
+  RecordsTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      TableName: !Sub "${NamePrefix}-records"
+      BillingMode: PROVISIONED
+      TableClass: STANDARD
+      ProvisionedThroughput: { ReadCapacityUnits: 8, WriteCapacityUnits: 8 }
+      AttributeDefinitions:
+        - { AttributeName: datasetId, AttributeType: S }
+        - { AttributeName: recordId, AttributeType: S }
+      KeySchema:
+        - { AttributeName: datasetId, KeyType: HASH }
+        - { AttributeName: recordId, KeyType: RANGE }
+      Tags: [{ Key: Project, Value: !Ref ProjectTag }]
+
+  JobsTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      TableName: !Sub "${NamePrefix}-jobs"
+      BillingMode: PROVISIONED
+      TableClass: STANDARD
+      ProvisionedThroughput: { ReadCapacityUnits: 4, WriteCapacityUnits: 4 }
+      AttributeDefinitions:
+        - { AttributeName: jobId, AttributeType: S }
+      KeySchema:
+        - { AttributeName: jobId, KeyType: HASH }
+      TimeToLiveSpecification: { AttributeName: expiresAt, Enabled: true }
+      Tags: [{ Key: Project, Value: !Ref ProjectTag }]
+
+  CasesTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      TableName: !Sub "${NamePrefix}-cases"
+      BillingMode: PROVISIONED
+      TableClass: STANDARD
+      ProvisionedThroughput: { ReadCapacityUnits: 4, WriteCapacityUnits: 4 }
+      AttributeDefinitions:
+        - { AttributeName: caseId, AttributeType: S }
+      KeySchema:
+        - { AttributeName: caseId, KeyType: HASH }
+      Tags: [{ Key: Project, Value: !Ref ProjectTag }]
+
+  AuditTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      TableName: !Sub "${NamePrefix}-audit"
+      BillingMode: PROVISIONED
+      TableClass: STANDARD
+      ProvisionedThroughput: { ReadCapacityUnits: 5, WriteCapacityUnits: 5 }
+      AttributeDefinitions:
+        - { AttributeName: streamId, AttributeType: S }
+        - { AttributeName: eventId, AttributeType: S }
+      KeySchema:
+        - { AttributeName: streamId, KeyType: HASH }
+        - { AttributeName: eventId, KeyType: RANGE }
+      Tags: [{ Key: Project, Value: !Ref ProjectTag }]
+
+  # ------------------------------------------------------------------ SQS
+  DeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${NamePrefix}-dlq"
+      MessageRetentionPeriod: 345600 # 4 days
+      SqsManagedSseEnabled: true     # SSE-SQS, no KMS charges
+      Tags: [{ Key: Project, Value: !Ref ProjectTag }]
+
+  ProcessingQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${NamePrefix}-jobs"
+      VisibilityTimeout: 180         # 6 x worker timeout (30 s), per AWS guidance
+      MessageRetentionPeriod: 86400  # 1 day
+      ReceiveMessageWaitTimeSeconds: 20
+      SqsManagedSseEnabled: true
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt DeadLetterQueue.Arn
+        maxReceiveCount: 5           # backstop; the worker dead-letters explicitly after 3 attempts
+      Tags: [{ Key: Project, Value: !Ref ProjectTag }]
+
+  # ------------------------------------------------------------------ Logs (short retention)
+  ApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${NamePrefix}-api"
+      RetentionInDays: 3
+      Tags: [{ Key: Project, Value: !Ref ProjectTag }]
+
+  WorkerLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${NamePrefix}-worker"
+      RetentionInDays: 3
+      Tags: [{ Key: Project, Value: !Ref ProjectTag }]
+
+  # ------------------------------------------------------------------ IAM (least privilege)
+  ApiRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${NamePrefix}-api-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      Tags: [{ Key: Project, Value: !Ref ProjectTag }]
+      Policies:
+        - PolicyName: api-least-privilege
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: Logs
+                Effect: Allow
+                Action: [logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !Sub "${ApiLogGroup.Arn}"
+              - Sid: Tables
+                Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                  - dynamodb:BatchWriteItem
+                Resource:
+                  - !GetAtt RecordsTable.Arn
+                  - !GetAtt JobsTable.Arn
+                  - !GetAtt CasesTable.Arn
+                  - !GetAtt AuditTable.Arn
+              - Sid: SubmitJobs
+                Effect: Allow
+                Action: [sqs:SendMessage, sqs:GetQueueAttributes]
+                Resource: !GetAtt ProcessingQueue.Arn
+              - Sid: InspectAndRecoverDlq
+                Effect: Allow
+                Action: [sqs:ReceiveMessage, sqs:DeleteMessage, sqs:GetQueueAttributes]
+                Resource: !GetAtt DeadLetterQueue.Arn
+              - Sid: ReadDlqAlarm
+                Effect: Allow
+                Action: cloudwatch:DescribeAlarms
+                Resource: !Sub "arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${NamePrefix}-dlq-not-empty"
+              - Sid: ReadWorkerMetrics # GetMetricStatistics has no resource-level permissions
+                Effect: Allow
+                Action: cloudwatch:GetMetricStatistics
+                Resource: "*"
+
+  WorkerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${NamePrefix}-worker-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      Tags: [{ Key: Project, Value: !Ref ProjectTag }]
+      Policies:
+        - PolicyName: worker-least-privilege
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: Logs
+                Effect: Allow
+                Action: [logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !Sub "${WorkerLogGroup.Arn}"
+              - Sid: Tables # no DeleteItem: the worker never deletes data
+                Effect: Allow
+                Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:UpdateItem, dynamodb:Query, dynamodb:Scan]
+                Resource:
+                  - !GetAtt RecordsTable.Arn
+                  - !GetAtt JobsTable.Arn
+                  - !GetAtt CasesTable.Arn
+                  - !GetAtt AuditTable.Arn
+              - Sid: ConsumeQueue
+                Effect: Allow
+                Action: [sqs:ReceiveMessage, sqs:DeleteMessage, sqs:GetQueueAttributes, sqs:ChangeMessageVisibility]
+                Resource: !GetAtt ProcessingQueue.Arn
+              - Sid: DeadLetter
+                Effect: Allow
+                Action: sqs:SendMessage
+                Resource: !GetAtt DeadLetterQueue.Arn
+
+  # ------------------------------------------------------------------ Lambda
+  # Code is a placeholder here; scripts/deploy.py uploads the real package
+  # directly with UpdateFunctionCode (no S3 artifact bucket needed).
+  ApiFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: ApiLogGroup
+    Properties:
+      FunctionName: !Sub "${NamePrefix}-api"
+      Runtime: python3.13
+      Architectures: [arm64]
+      Handler: api.handler.handler
+      MemorySize: 256
+      Timeout: 10
+      Role: !GetAtt ApiRole.Arn
+      Code:
+        ZipFile: |
+          def handler(event, context):
+              return {"statusCode": 503, "body": "{\"error\":{\"code\":\"NOT_DEPLOYED\",\"message\":\"Code not uploaded yet\"}}"}
+      Environment:
+        Variables:
+          RECORDS_TABLE: !Ref RecordsTable
+          JOBS_TABLE: !Ref JobsTable
+          CASES_TABLE: !Ref CasesTable
+          AUDIT_TABLE: !Ref AuditTable
+          QUEUE_URL: !Ref ProcessingQueue
+          DLQ_URL: !Ref DeadLetterQueue
+          DLQ_ALARM_NAME: !Sub "${NamePrefix}-dlq-not-empty"
+          WORKER_FUNCTION_NAME: !Sub "${NamePrefix}-worker"
+          COGNITO_REGION: !Ref AWS::Region
+          USER_POOL_ID: !Ref UserPool
+          APP_CLIENT_ID: !Ref UserPoolClient
+          REQUIRE_IAM_AUTH: !If [IamAuth, "true", "false"]
+          LOG_LEVEL: INFO
+      Tags: [{ Key: Project, Value: !Ref ProjectTag }]
+
+  WorkerFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: WorkerLogGroup
+    Properties:
+      FunctionName: !Sub "${NamePrefix}-worker"
+      Runtime: python3.13
+      Architectures: [arm64]
+      Handler: worker.handler.handler
+      MemorySize: 256
+      Timeout: 30
+      Role: !GetAtt WorkerRole.Arn
+      Code:
+        ZipFile: |
+          def handler(event, context):
+              raise RuntimeError("Code not uploaded yet")
+      Environment:
+        Variables:
+          RECORDS_TABLE: !Ref RecordsTable
+          JOBS_TABLE: !Ref JobsTable
+          CASES_TABLE: !Ref CasesTable
+          AUDIT_TABLE: !Ref AuditTable
+          QUEUE_URL: !Ref ProcessingQueue
+          DLQ_URL: !Ref DeadLetterQueue
+          MAX_ATTEMPTS: "3"
+          LOG_LEVEL: INFO
+      Tags: [{ Key: Project, Value: !Ref ProjectTag }]
+
+  WorkerQueueMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !GetAtt ProcessingQueue.Arn
+      FunctionName: !Ref WorkerFunction
+      BatchSize: 5
+      MaximumBatchingWindowInSeconds: 0
+      FunctionResponseTypes: [ReportBatchItemFailures]
+      ScalingConfig: { MaximumConcurrency: !Ref WorkerMaxConcurrency }
+      Enabled: true
+
+  ApiFunctionUrl:
+    Type: AWS::Lambda::Url
+    Properties:
+      TargetFunctionArn: !GetAtt ApiFunction.Arn
+      AuthType: !Ref ApiAuthType
+      InvokeMode: BUFFERED
+      Cors:
+        AllowOrigins: !Ref AllowedOrigins
+        AllowMethods: [GET, POST, DELETE]
+        AllowHeaders:
+          - authorization
+          - content-type
+          - x-amz-date
+          - x-amz-security-token
+          - x-amz-content-sha256
+          - x-transitshield-token
+        MaxAge: 600
+        AllowCredentials: false
+
+  # Function URL access after the October 2025 change needs BOTH permissions.
+  # AWS_IAM: only the identity pool's authenticated role may invoke, and
+  # InvokeFunction is limited to calls arriving through the function URL, so
+  # signed-in users cannot call the function directly with forged events.
+  UrlInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ApiFunction
+      Action: lambda:InvokeFunctionUrl
+      Principal: !If [IamAuth, !GetAtt AuthenticatedRole.Arn, "*"]
+      FunctionUrlAuthType: !Ref ApiAuthType
+
+  UrlInvokeFunctionPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ApiFunction
+      Action: lambda:InvokeFunction
+      Principal: !If [IamAuth, !GetAtt AuthenticatedRole.Arn, "*"]
+      InvokedViaFunctionUrl: true
+
+  # ------------------------------------------------------------------ CloudWatch alarm
+  DlqAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${NamePrefix}-dlq-not-empty"
+      AlarmDescription: TransitShield jobs are waiting in the dead-letter queue (no notification action; shown in the app).
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions: [{ Name: QueueName, Value: !GetAtt DeadLetterQueue.QueueName }]
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      Tags: [{ Key: Project, Value: !Ref ProjectTag }]
+
+  # ------------------------------------------------------------------ Cognito
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      UserPoolName: !Sub "${NamePrefix}-users"
+      UserPoolTier: LITE          # free tier: 10,000 MAU; no paid add-ons
+      DeletionProtection: INACTIVE
+      UsernameAttributes: [email]
+      AutoVerifiedAttributes: [email]
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: true   # no self sign-up
+        InviteMessageTemplate:
+          EmailSubject: Your TransitShield demo account
+          EmailMessage: "You have been invited to the TransitShield college demo (synthetic data only). Username: {username}  Temporary password: {####}  You will be asked to choose a new password at first sign-in."
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 12
+          RequireLowercase: true
+          RequireUppercase: true
+          RequireNumbers: true
+          RequireSymbols: false
+          TemporaryPasswordValidityDays: 7
+      AccountRecoverySetting:
+        RecoveryMechanisms: [{ Name: verified_email, Priority: 1 }]
+      EmailConfiguration: { EmailSendingAccount: COGNITO_DEFAULT }
+      MfaConfiguration: "OFF"
+      UserPoolTags: { Project: !Ref ProjectTag }
+
+  AnalystsGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      UserPoolId: !Ref UserPool
+      GroupName: analysts
+      Description: Can generate data, submit jobs and work cases.
+
+  AdminsGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      UserPoolId: !Ref UserPool
+      GroupName: admins
+      Description: Analyst rights plus demo dataset reset.
+
+  UserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Condition: HasDomain
+    Properties:
+      UserPoolId: !Ref UserPool
+      Domain: !Ref CognitoDomainPrefix
+      ManagedLoginVersion: 1   # classic hosted UI (available on the Lite tier)
+
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref UserPool
+      ClientName: !Sub "${NamePrefix}-web"
+      GenerateSecret: false             # public SPA client: no secret to leak
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthFlows: [code]         # Authorization Code (+ PKCE enforced by the app)
+      AllowedOAuthScopes: [openid, email]
+      SupportedIdentityProviders: [COGNITO]
+      CallbackURLs: !Ref CallbackUrls
+      LogoutURLs: !Ref CallbackUrls
+      ExplicitAuthFlows: [ALLOW_REFRESH_TOKEN_AUTH]   # no password APIs; sign-in only via hosted UI
+      PreventUserExistenceErrors: ENABLED
+      EnableTokenRevocation: true
+      AccessTokenValidity: 60
+      IdTokenValidity: 60
+      RefreshTokenValidity: 12
+      TokenValidityUnits: { AccessToken: minutes, IdToken: minutes, RefreshToken: hours }
+
+  IdentityPool:
+    Type: AWS::Cognito::IdentityPool
+    Properties:
+      IdentityPoolName: !Sub "${NamePrefix}_identities"
+      AllowUnauthenticatedIdentities: false
+      AllowClassicFlow: false
+      CognitoIdentityProviders:
+        - ClientId: !Ref UserPoolClient
+          ProviderName: !GetAtt UserPool.ProviderName
+          ServerSideTokenCheck: true
+      IdentityPoolTags: [{ Key: Project, Value: !Ref ProjectTag }]
+
+  AuthenticatedRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${NamePrefix}-signed-in-user-role"
+      Description: Assumed by signed-in TransitShield users via the Cognito identity pool. Can only call the API function URL.
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Federated: cognito-identity.amazonaws.com }
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals: { "cognito-identity.amazonaws.com:aud": !Ref IdentityPool }
+              "ForAnyValue:StringLike": { "cognito-identity.amazonaws.com:amr": authenticated }
+      Tags: [{ Key: Project, Value: !Ref ProjectTag }]
+      Policies:
+        - PolicyName: invoke-api-function-url-only
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunctionUrl
+                Resource: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${NamePrefix}-api"
+                Condition:
+                  StringEquals: { "lambda:FunctionUrlAuthType": AWS_IAM }
+
+  IdentityPoolRoles:
+    Type: AWS::Cognito::IdentityPoolRoleAttachment
+    Properties:
+      IdentityPoolId: !Ref IdentityPool
+      Roles:
+        authenticated: !GetAtt AuthenticatedRole.Arn
+
+Outputs:
+  Region: { Value: !Ref AWS::Region }
+  ApiUrl: { Value: !GetAtt ApiFunctionUrl.FunctionUrl }
+  ApiAuthType: { Value: !Ref ApiAuthType }
+  UserPoolId: { Value: !Ref UserPool }
+  UserPoolClientId: { Value: !Ref UserPoolClient }
+  IdentityPoolId: { Value: !Ref IdentityPool }
+  CognitoDomain: { Value: !If [HasDomain, !Sub "${CognitoDomainPrefix}.auth.${AWS::Region}.amazoncognito.com", ""] }
+  ApiFunctionName: { Value: !Ref ApiFunction }
+  WorkerFunctionName: { Value: !Ref WorkerFunction }
+  QueueUrl: { Value: !Ref ProcessingQueue }
+  DeadLetterQueueUrl: { Value: !Ref DeadLetterQueue }
+  WorkerEventSourceMappingId: { Value: !Ref WorkerQueueMapping }
+  RecordsTableName: { Value: !Ref RecordsTable }
+  JobsTableName: { Value: !Ref JobsTable }
+  CasesTableName: { Value: !Ref CasesTable }
+  AuditTableName: { Value: !Ref AuditTable }

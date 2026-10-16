@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Build output (Lambda zips are rebuilt by scripts/deploy.py)
+build/
+dist/
+
+# Local secrets / credentials - never commit
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+.aws/
+credentials
+*.credentials
+
+# Node / tooling
+node_modules/
+.DS_Store
+Thumbs.db
+*.log
+.idea/
+.vscode/
+.claude/

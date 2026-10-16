@@ -1,0 +1,12 @@
+{
+  "name": "transitshield",
+  "version": "1.0.0",
+  "private": true,
+  "description": "TransitShield - synthetic airport cargo and financial anomaly investigation demo",
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/js/frontend.test.mjs",
+    "serve": "python scripts/serve_frontend.py"
+  },
+  "license": "MIT"
+}

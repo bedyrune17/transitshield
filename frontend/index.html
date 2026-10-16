@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self' https://*.amazonaws.com https://*.amazoncognito.com https://*.on.aws; base-uri 'self'; form-action 'self'; object-src 'none'">
+  <meta name="referrer" content="no-referrer">
+  <meta name="description" content="TransitShield: synthetic airport cargo and financial anomaly investigation demo (educational, synthetic data only).">
+  <title>TransitShield</title>
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="css/app.css">
+  <script type="module" src="js/main.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <div class="app" id="app">
+    <aside class="sidebar" id="sidebar" aria-label="Primary">
+      <div class="brand">
+        <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><path d="M16 3 5 7v8c0 7 4.6 12 11 14 6.4-2 11-7 11-14V7L16 3Z" fill="none" stroke="currentColor" stroke-width="2"/><path d="m10.5 16 3.5 3.5 7.5-7.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <div>
+          <div class="brand-name">TransitShield</div>
+          <div class="brand-sub">Synthetic anomaly investigation</div>
+        </div>
+      </div>
+      <nav id="nav" class="nav"></nav>
+      <div class="sidebar-foot" id="sidebar-foot"></div>
+    </aside>
+    <div class="main-col">
+      <header class="topbar" id="topbar"></header>
+      <div class="notice-bar" id="notice-bar" role="note"></div>
+      <main id="main" class="content" tabindex="-1">
+        <div class="loading-block"><span class="spinner" aria-hidden="true"></span> Loading TransitShield…</div>
+      </main>
+    </div>
+  </div>
+  <div id="drawer-root"></div>
+  <div id="modal-root"></div>
+  <div id="toast-root" class="toast-root" aria-live="polite" aria-atomic="false"></div>
+  <noscript><p class="noscript">TransitShield needs JavaScript (ES modules) to run.</p></noscript>
+</body>
+</html>

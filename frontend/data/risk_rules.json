@@ -1,0 +1,157 @@
+{
+  "rulesetVersion": "2026.10-demo.1",
+  "engineVersion": "1.0.0",
+  "disclaimer": "Illustrative demonstration rules and thresholds for SYNTHETIC data only. They have not been validated for any real-world operational, customs, security or financial decision and must not be used as such. A high score indicates data-quality or relationship inconsistencies in fictional records; it is not evidence of wrongdoing by any person or organisation.",
+  "defaultProfile": "balanced",
+  "autoCaseMinLevel": "HIGH",
+  "rules": [
+    {
+      "id": "R01",
+      "code": "MISSING_REQUIRED_FIELD",
+      "title": "Required field missing",
+      "description": "A field that is mandatory for this record type is absent or empty.",
+      "weight": 35
+    },
+    {
+      "id": "R02",
+      "code": "DUPLICATE_DOCUMENT_REFERENCE",
+      "title": "Duplicate document reference",
+      "description": "The record's document reference (manifest number, air waybill, invoice number or transaction reference) also appears on another record of the same type.",
+      "weight": 40
+    },
+    {
+      "id": "R03",
+      "code": "AMOUNT_MISMATCH",
+      "title": "Conflicting amounts across linked documents",
+      "description": "An invoice amount differs from its shipment's declared value, or a transaction amount differs from its invoice, by more than the configured tolerance.",
+      "weight": 35
+    },
+    {
+      "id": "R04",
+      "code": "CURRENCY_MISMATCH",
+      "title": "Currency differs from linked document",
+      "description": "The currency on this record differs from the currency on the document it is linked to.",
+      "weight": 20
+    },
+    {
+      "id": "R05",
+      "code": "INVALID_DATE_ORDER",
+      "title": "Invalid date ordering",
+      "description": "Timestamps are in an impossible or inconsistent order (arrival not after departure, or payment dated long before the invoice).",
+      "weight": 30
+    },
+    {
+      "id": "R06",
+      "code": "COUNTERPARTY_MISMATCH",
+      "title": "Counterparty differs from linked document",
+      "description": "The parties named on this record do not match the parties on the linked shipment or invoice.",
+      "weight": 30
+    },
+    {
+      "id": "R07",
+      "code": "REFERENCE_REUSE",
+      "title": "Reference reused across unrelated records",
+      "description": "A linked document ID is claimed by more than one record that should each have their own document.",
+      "weight": 30
+    },
+    {
+      "id": "R08",
+      "code": "BROKEN_LINK",
+      "title": "Broken or non-reciprocal link",
+      "description": "A linked record does not exist in the dataset, or it does not link back to this record.",
+      "weight": 30
+    },
+    {
+      "id": "R09",
+      "code": "ENTITY_CONCENTRATION",
+      "title": "Repeated entity reference",
+      "description": "The consignee on this shipment appears on an unusually high number of shipments in the dataset.",
+      "weight": 20
+    },
+    {
+      "id": "R10",
+      "code": "INVALID_FIELD_VALUE",
+      "title": "Invalid field value",
+      "description": "A value is malformed or outside its allowed range (non-positive quantity or amount, unknown currency or airport code, malformed timestamp, origin equals destination).",
+      "weight": 30
+    },
+    {
+      "id": "R11",
+      "code": "MULTIPLE_FINDINGS",
+      "title": "Multiple independent findings",
+      "description": "Several different rules fired on the same record, which raises its review priority.",
+      "weight": 15
+    }
+  ],
+  "requiredFields": {
+    "MANIFEST": ["manifestNo", "flightRef", "carrierId", "originAirport", "destinationAirport", "departureAt", "arrivalAt"],
+    "SHIPMENT": ["awbNumber", "manifestId", "consignorId", "consigneeId", "commodity", "pieces", "weightKg", "declaredValueMinor", "currency", "invoiceId"],
+    "INVOICE": ["invoiceNo", "shipmentId", "sellerId", "buyerId", "amountMinor", "currency", "issuedAt"],
+    "TRANSACTION": ["txnRef", "invoiceId", "payerId", "payeeId", "amountMinor", "currency", "valueDate"]
+  },
+  "documentReferenceField": {
+    "MANIFEST": "manifestNo",
+    "SHIPMENT": "awbNumber",
+    "INVOICE": "invoiceNo",
+    "TRANSACTION": "txnRef"
+  },
+  "reference": {
+    "currencies": ["USD", "EUR", "INR", "GBP", "SGD", "AED"],
+    "airports": ["PCL1", "NVH2", "EHV3", "MRL4", "SCI5", "HMT6", "QRB7", "DLW8"]
+  },
+  "params": {
+    "invoiceShipmentToleranceBps": 500,
+    "txnInvoiceToleranceBps": 200,
+    "maxPrepaymentDays": 30,
+    "concentrationMinShipments": 6,
+    "multipleFindingsMin": 3
+  },
+  "levels": [
+    { "name": "NONE", "minScore": 0 },
+    { "name": "LOW", "minScore": 1 },
+    { "name": "MEDIUM", "minScore": 30 },
+    { "name": "HIGH", "minScore": 60 }
+  ],
+  "flagMinScore": 30,
+  "profiles": {
+    "balanced": {
+      "label": "Balanced (default)",
+      "description": "Default demo profile. Flags MEDIUM and above (score >= 30)."
+    },
+    "strict": {
+      "label": "Strict",
+      "description": "Tighter tolerances and a lower flag threshold. Catches more planted patterns but produces more false positives.",
+      "flagMinScore": 20,
+      "levels": [
+        { "name": "NONE", "minScore": 0 },
+        { "name": "LOW", "minScore": 1 },
+        { "name": "MEDIUM", "minScore": 20 },
+        { "name": "HIGH", "minScore": 50 }
+      ],
+      "params": {
+        "invoiceShipmentToleranceBps": 300,
+        "txnInvoiceToleranceBps": 100,
+        "concentrationMinShipments": 5
+      }
+    },
+    "lenient": {
+      "label": "Lenient",
+      "description": "Wider tolerances and a higher flag threshold (score >= 35). Fewer false positives, lower recall: single date, counterparty, link or format findings are not flagged on their own.",
+      "flagMinScore": 35,
+      "levels": [
+        { "name": "NONE", "minScore": 0 },
+        { "name": "LOW", "minScore": 1 },
+        { "name": "MEDIUM", "minScore": 35 },
+        { "name": "HIGH", "minScore": 70 }
+      ],
+      "params": {
+        "invoiceShipmentToleranceBps": 800,
+        "txnInvoiceToleranceBps": 400,
+        "concentrationMinShipments": 8
+      },
+      "weights": {
+        "R09": 10
+      }
+    }
+  }
+}
