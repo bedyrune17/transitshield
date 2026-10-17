@@ -111,7 +111,7 @@ function renderTopbar() {
   if (dsSelect.tagName === 'SELECT') dsSelect.style.maxWidth = '360px';
   let user = null;
   if (app.identity) {
-    const name = app.identity.username || app.identity.sub;
+    const name = app.identity.displayName || app.identity.username || app.identity.sub;
     user = h('div', { class: 'user-chip' },
       h('span', { class: 'avatar', 'aria-hidden': 'true' }, String(name).slice(0, 2).toUpperCase()),
       h('span', null, name, h('span', { class: 'muted' }, ' · ' + (app.identity.roles || []).slice(-1)[0])),
@@ -127,11 +127,11 @@ function renderNotice() {
   const bar = document.getElementById('notice-bar');
   if (app.mode === 'aws') {
     mount(bar, h('strong', null, 'AWS mode: '), 'records, jobs, cases and audit events are stored in the TransitShield backend (' + config.region + '). ',
-      'Values tagged ', h('span', { class: 'source-tag aws' }, 'Live AWS'), ' come directly from SQS / CloudWatch.');
+      'Values tagged ', h('span', { class: 'source-tag tag-aws' }, 'Live AWS'), ' come directly from SQS / CloudWatch.');
   } else {
     const warn = app.provider && app.provider.storageWarning ? ' ' + app.provider.storageWarning : '';
     mount(bar, h('strong', null, 'Local demo mode: '), 'all data is generated and processed in this browser; the queue and worker are ',
-      h('span', { class: 'source-tag sim' }, 'Simulated'), '. Nothing on screen is AWS data.' + warn);
+      h('span', { class: 'source-tag tag-sim' }, 'Simulated'), '. Nothing on screen is AWS data.' + warn);
   }
 }
 
@@ -211,6 +211,12 @@ async function boot() {
 
   try {
     app.identity = await app.provider.getIdentity();
+    if (mode === 'aws') {
+      // Display only: the email from the ID token. Authorisation always uses the
+      // identity the API verified (app.identity.sub / roles).
+      const profile = app.auth.profile();
+      if (profile && profile.email) app.identity.displayName = profile.email;
+    }
     await app.refreshDatasets();
   } catch (err) {
     renderTopbar();

@@ -141,9 +141,11 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .mode-pill.aws { color: var(--green); border-color: rgba(68, 185, 122, 0.45); background: var(--green-bg); }
 .mode-pill.off { color: var(--red); border-color: rgba(236, 95, 89, 0.45); background: var(--red-bg); }
 .source-tag { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 700; padding: 1px 6px; border-radius: 4px; }
-.source-tag.aws { color: var(--green); background: var(--green-bg); }
-.source-tag.sim { color: var(--amber); background: var(--amber-bg); }
-.source-tag.app { color: var(--accent-strong); background: var(--accent-bg); }
+/* modifier classes are prefixed so they can never collide with layout classes such as .app */
+.source-tag.tag-aws { color: var(--green); background: var(--green-bg); }
+.source-tag.tag-sim { color: var(--amber); background: var(--amber-bg); }
+.source-tag.tag-app { color: var(--accent-strong); background: var(--accent-bg); }
+.source-tag { align-self: center; white-space: nowrap; }
 
 /* ---------- buttons & forms ---------- */
 .btn {

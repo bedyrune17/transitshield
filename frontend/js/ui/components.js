@@ -81,7 +81,7 @@ export function scoreCell(score, level) {
     h('span', { class: 'score-bar', 'aria-hidden': 'true' }, bar));
 }
 export function sourceTag(kind) {
-  const map = { aws: ['Live AWS', 'aws'], sim: ['Simulated', 'sim'], app: ['App data', 'app'] };
+  const map = { aws: ['Live AWS', 'tag-aws'], sim: ['Simulated', 'tag-sim'], app: ['App data', 'tag-app'] };
   const [t, c] = map[kind] || map.app;
   return h('span', { class: ['source-tag', c] }, t);
 }
