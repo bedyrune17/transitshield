@@ -13,5 +13,5 @@ export default {
   apiUrl: "https://2qfarorkot33mefu27f3ycuc4q0jhrag.lambda-url.ap-south-1.on.aws/",
   apiAuthType: "AWS_IAM",
   stackName: "transitshield",
-  deployedAt: "2026-10-16T18:14:28Z",
+  deployedAt: "2026-10-17T02:40:12Z",
 };

@@ -35,6 +35,16 @@ so the public frontend does not reveal the account number. A user pool can
 only have one domain; the script therefore changes a domain in two steps
 (remove, then add).
 
+**If the invitation email never arrives** (institutional mail systems often
+filter `no-reply@verificationemail.com`), set the password directly from
+your own terminal — the prompt is hidden and the password is never echoed,
+logged or stored:
+```powershell
+& .\scripts\set_cognito_password.ps1 -UserPoolId <pool-id> -Email <user>
+```
+Note: the hosted UI's "Forgot your password?" cannot help a user who has never
+signed in (status `FORCE_CHANGE_PASSWORD`); Cognito sends no code in that state.
+
 Other commands:
 ```bash
 python scripts/deploy.py outputs                       # stack status + outputs

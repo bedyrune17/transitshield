@@ -72,7 +72,9 @@ class SqsDeadLetterQueue(SqsQueue):
     def remove_job_messages(self, job_id, rounds=3):
         removed = 0
         for _ in range(rounds):
-            resp = self.client.receive_message(QueueUrl=self.url, MaxNumberOfMessages=10, WaitTimeSeconds=0,
+            # Long poll (1 s): short polling samples only some SQS servers and can
+            # miss the few messages a DLQ holds.
+            resp = self.client.receive_message(QueueUrl=self.url, MaxNumberOfMessages=10, WaitTimeSeconds=1,
                                                VisibilityTimeout=5)
             msgs = resp.get("Messages", [])
             if not msgs:
