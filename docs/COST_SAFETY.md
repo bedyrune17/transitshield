@@ -28,7 +28,7 @@ billable; **NV** = not verified.
 |---|---|---|---|---|
 | AWS Lambda (2 functions, arm64, 256 MB) | API 10 s timeout, worker 30 s | 1M requests + 400,000 GB-s / month | well below 10k requests and 1,000 GB-s / month for a demo | **AF** |
 | Lambda Function URL (AWS_IAM) | 1 URL | no separate function-URL charge on the pricing page; requests are Lambda requests | unsigned requests are rejected by IAM before invocation | **AF** |
-| Amazon SQS (2 standard queues, SSE-SQS) | long polling 20 s | 1M requests / month, all regions | idle event-source polling ≈ 0.65M requests / 30 days (5 long-poll connections × 3/min, see §4) + a few thousand app requests | **AF** (largest consumer; pause option below) |
+| Amazon SQS (2 standard queues, SSE-SQS) | long polling 20 s | 1M requests / month, all regions | idle event-source polling **measured at 360 empty receives/hour ≈ 0.26M / 30 days** (CloudWatch `NumberOfEmptyReceives`, 2026-10-17) + a few thousand app requests | **AF** (largest consumer; pause option below) |
 | Amazon DynamoDB (4 tables, PROVISIONED, Standard class) | 21 RCU / 21 WCU total, no GSIs, no auto scaling, no PITR, TTL on jobs | 25 RCU, 25 WCU, 25 GB storage **per Region per payer account** (provisioned capacity) | well under 1 GB | **AF** — `scripts/cost_check.py` verified 0 RCU/WCU used by other tables in ap-south-1 (the only other table is on-demand) |
 | DynamoDB TTL deletes | jobs + rate counters | TTL deletes are free | — | **AF** |
 | Amazon Cognito user pool | **Lite** tier, no SMS, no MFA, no advanced security, classic hosted UI | 10,000 MAU / month (Lite or Essentials), does not expire | 1–5 users | **AF** |
@@ -77,11 +77,12 @@ plan already prevents charges).
 ## 4. Known usage drivers and how to reduce them
 
 * **Idle SQS polling.** A Lambda SQS event source long-polls the queue even
-  when it is empty. AWS documents five concurrent pollers for standard queues
-  and that the reduce-to-2 optimisation is disabled when MaximumConcurrency is
-  set. Five 20-second long polls ≈ 21,600 ReceiveMessage calls per day ≈ 0.65M
-  per 30 days — inside the 1M free requests, but the largest share. When not
-  demonstrating, pause it:
+  when it is empty. The documentation does not give an idle poller count, so we
+  measured it: the queue's `NumberOfEmptyReceives` metric shows a steady **360
+  per hour** over 12 idle hours (two 20-second long-poll connections), i.e.
+  ~8,640 per day ≈ **0.26M per 30 days** — about a quarter of the 1M free
+  requests and the largest share of our SQS usage. When not demonstrating,
+  pause it:
   `python scripts/deploy.py pause-worker --account <id>` (jobs then wait in
   the queue) and `resume-worker` before a demo.
 * **DynamoDB throughput.** Scoring 300 records consumes ~300–600 WCU, which

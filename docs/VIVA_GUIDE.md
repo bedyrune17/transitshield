@@ -98,8 +98,8 @@ last-hour Lambda metrics live and labels them **Live AWS**.
 
 **Which services can generate charges?**
 All of them beyond their free allowances: Lambda (requests, GB-seconds), SQS
-(requests — idle event-source polling is the biggest consumer at ~0.65M/month
-of the 1M free), DynamoDB (provisioned capacity above 25/25, storage above
+(requests — idle event-source polling is the biggest consumer: we measured
+360 empty receives/hour ≈ 0.26M/month of the 1M free), DynamoDB (provisioned capacity above 25/25, storage above
 25 GB), CloudWatch (logs above 5 GB, more than 10 custom metrics/alarms,
 GetMetricData), Cognito (above 10,000 MAU, SMS, Plus tier). On this account's
 **Free plan** none of that reaches the card; usage above Always Free would only
